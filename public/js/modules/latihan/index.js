@@ -787,4 +787,749 @@ export default {
     }
 
     .latihan-result__actions {
-      display: f
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 6px;
+    }
+
+    .latihan-review {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--surface-1);
+    }
+
+    .latihan-review > summary {
+      padding: 14px 16px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 680;
+      cursor: pointer;
+      list-style: none;
+    }
+
+    .latihan-review > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .latihan-review > summary::after {
+      content: "+";
+      float: right;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    .latihan-review[open] > summary::after {
+      content: "−";
+    }
+
+    .latihan-review__list {
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      margin: 0;
+      padding: 0 14px 14px;
+      list-style: none;
+    }
+
+    .latihan-review__item {
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: rgb(var(--ink-rgb) / 0.022);
+    }
+
+    .latihan-review__question {
+      margin: 0;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 650;
+      line-height: 1.5;
+    }
+
+    .latihan-review__answer {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    .latihan-review__answer strong {
+      color: var(--text-secondary);
+      font-weight: 700;
+    }
+
+    .latihan-review__explanation {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+  `,
+
+  async getHomeSummary(ctx) {
+    const [banks, attempts] = await Promise.all([
+      ctx.data('banks').list(),
+      ctx.data('attempts').list(),
+    ]);
+    const questionCount = banks.reduce((sum, bank) => sum + (bank.questions?.length ?? 0), 0);
+    const lastAttempt = sortAttempts(attempts)[0];
+
+    if (banks.length === 0) {
+      return [{
+        id: 'latihan-ringkasan',
+        label: 'Latihan soal',
+        value: 'Belum ada',
+        hint: 'Impor paket soal JSON untuk mulai berlatih.',
+        tone: 'default',
+        primary: true,
+      }];
+    }
+
+    return [{
+      id: 'latihan-ringkasan',
+      label: 'Latihan soal',
+      value: `${banks.length} paket`,
+      hint: lastAttempt
+        ? `Skor terakhir ${percentOf(lastAttempt)}% · ${lastAttempt.correct}/${lastAttempt.total} benar`
+        : `${questionCount} soal siap dilatih.`,
+      tone: lastAttempt && percentOf(lastAttempt) >= 80 ? 'success' : 'default',
+      primary: true,
+    }];
+  },
+
+  async mount(ctx, container) {
+    const banksRepo = ctx.data('banks');
+    const attemptsRepo = ctx.data('attempts');
+    const ui = ctx.ui;
+    const utils = ctx.utils;
+    const root = el('div', { class: 'latihan' });
+
+    let banks = [];
+    let attempts = [];
+    let session = null;
+
+    container.replaceChildren(root);
+    ctx.onCleanup(() => {
+      session = null;
+      root.replaceChildren();
+    });
+
+    const lastAttemptFor = (bankId) => attempts.find((attempt) => attempt.bankId === bankId);
+
+    const startPractice = (bank) => {
+      if (!Array.isArray(bank.questions) || bank.questions.length === 0) {
+        ui.toast('Paket ini belum memiliki soal.', { type: 'error' });
+        return;
+      }
+      session = {
+        bank,
+        questions: createSessionQuestions(bank),
+        index: 0,
+        answers: [],
+        startedAt: Date.now(),
+      };
+      renderQuestion();
+    };
+
+    const leavePractice = async () => {
+      if (!session) {
+        renderHome();
+        return;
+      }
+      const answered = session.answers.filter((answer) => Number.isInteger(answer)).length;
+      if (answered > 0) {
+        const confirmed = await ui.confirm({
+          title: 'Keluar dari latihan?',
+          message: 'Jawaban yang sudah dipilih tidak akan disimpan sebagai riwayat.',
+          confirmLabel: 'Keluar',
+          cancelLabel: 'Lanjut mengerjakan',
+          danger: true,
+        });
+        if (!confirmed || ctx.signal.aborted) return;
+      }
+      session = null;
+      renderHome();
+    };
+
+    const answerQuestion = (optionIndex) => {
+      if (!session) return;
+      const current = session.answers[session.index];
+      if (Number.isInteger(current)) return;
+      session.answers[session.index] = optionIndex;
+      renderQuestion();
+    };
+
+    const goNext = async () => {
+      if (!session) return;
+      if (session.index >= session.questions.length - 1) {
+        await finishPractice();
+        return;
+      }
+      session.index += 1;
+      renderQuestion();
+    };
+
+    const finishPractice = async () => {
+      if (!session) return;
+      const currentSession = session;
+      const total = currentSession.questions.length;
+      const answers = currentSession.answers;
+      const correct = currentSession.questions.reduce((sum, question, index) => (
+        sum + (answers[index] === question.answer ? 1 : 0)
+      ), 0);
+      const attempt = {
+        bankId: currentSession.bank.id,
+        bankTitle: currentSession.bank.title,
+        subject: currentSession.bank.subject || '',
+        correct,
+        total,
+        percent: total > 0 ? Math.round((correct / total) * 100) : 0,
+        durationMs: Date.now() - currentSession.startedAt,
+        completedAt: new Date().toISOString(),
+      };
+      session = null;
+
+      try {
+        const saved = await attemptsRepo.create(attempt);
+        if (ctx.signal.aborted) return;
+        attempts = sortAttempts([saved, ...attempts]);
+      } catch (error) {
+        console.error('[Latihan] Riwayat latihan gagal disimpan.', error);
+        if (ctx.signal.aborted) return;
+        ui.toast('Skor selesai, tetapi riwayat gagal disimpan.', { type: 'error' });
+      }
+      renderResult(attempt, currentSession.questions, answers, currentSession.bank);
+    };
+
+    const handleImport = async (file, input) => {
+      if (!file) return;
+      if (file.size > MAX_FILE_BYTES) {
+        ui.toast('Ukuran file terlalu besar. Maksimal 2 MB.', { type: 'error' });
+        input.value = '';
+        return;
+      }
+
+      try {
+        const text = await file.text();
+        if (ctx.signal.aborted) return;
+        let payload;
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          throw new Error('File bukan JSON yang valid.');
+        }
+        const bank = parseBankPayload(payload, file.name);
+        const created = await banksRepo.create(bank);
+        if (ctx.signal.aborted) return;
+        banks = sortBanks([created, ...banks]);
+        renderHome();
+        ui.toast(
+          `“${created.title}” diimpor: ${created.questions.length} soal.`,
+          { type: 'success' },
+        );
+      } catch (error) {
+        if (ctx.signal.aborted) return;
+        ui.toast(error.message || 'Paket soal gagal diimpor.', { type: 'error', duration: 6000 });
+      } finally {
+        input.value = '';
+      }
+    };
+
+    const deleteBank = async (bank) => {
+      const confirmed = await ui.confirm({
+        title: 'Hapus paket soal?',
+        message: `“${bank.title}” akan dihapus. Riwayat skor tetap disimpan.`,
+        confirmLabel: 'Hapus',
+        danger: true,
+      });
+      if (!confirmed || ctx.signal.aborted) return;
+
+      try {
+        await banksRepo.remove(bank.id);
+        if (ctx.signal.aborted) return;
+        banks = banks.filter((item) => item.id !== bank.id);
+        renderHome();
+        ui.toast('Paket soal dihapus.', { type: 'success' });
+      } catch (error) {
+        console.error('[Latihan] Paket soal gagal dihapus.', error);
+        if (!ctx.signal.aborted) ui.toast('Paket soal gagal dihapus.', { type: 'error' });
+      }
+    };
+
+    const clearHistory = async () => {
+      const confirmed = await ui.confirm({
+        title: 'Hapus riwayat latihan?',
+        message: 'Semua skor dan riwayat latihan akan dihapus. Paket soal tetap tersimpan.',
+        confirmLabel: 'Hapus riwayat',
+        danger: true,
+      });
+      if (!confirmed || ctx.signal.aborted) return;
+
+      try {
+        await attemptsRepo.clear();
+        if (ctx.signal.aborted) return;
+        attempts = [];
+        renderHome();
+        ui.toast('Riwayat latihan dihapus.', { type: 'success' });
+      } catch (error) {
+        console.error('[Latihan] Riwayat gagal dihapus.', error);
+        if (!ctx.signal.aborted) ui.toast('Riwayat gagal dihapus.', { type: 'error' });
+      }
+    };
+
+    const createFileInput = () => {
+      const input = el('input', {
+        class: 'latihan-file-input',
+        type: 'file',
+        accept: '.json,application/json',
+        tabindex: -1,
+        'aria-hidden': 'true',
+      });
+      input.addEventListener('change', () => {
+        const [file] = input.files ?? [];
+        handleImport(file, input);
+      });
+      return input;
+    };
+
+    const renderHome = () => {
+      session = null;
+      root.replaceChildren();
+
+      const fileInput = createFileInput();
+      const totalQuestions = banks.reduce(
+        (sum, bank) => sum + (bank.questions?.length ?? 0),
+        0,
+      );
+      const bestPercent = attempts.reduce(
+        (best, attempt) => Math.max(best, percentOf(attempt)),
+        0,
+      );
+
+      const hero = el('section', { class: 'latihan-hero' });
+      const importButton = makeButton({
+        label: 'Impor soal JSON',
+        iconName: 'upload',
+        variant: 'primary',
+        onClick: () => fileInput.click(),
+      });
+      const sampleButton = makeButton({
+        label: 'Unduh contoh',
+        iconName: 'download',
+        variant: 'secondary',
+        onClick: () => utils.downloadJSON('contoh-latihan-soal.json', SAMPLE_BANK),
+      });
+      hero.append(
+        el('p', { class: 'latihan-hero__eyebrow', text: 'Ruang latihan' }),
+        el('h2', { class: 'latihan-hero__title', text: 'Uji pemahamanmu.' }),
+        el('p', {
+          class: 'latihan-hero__text',
+          text: 'Impor paket soal pilihan ganda dari file JSON. Setiap jawaban diberi umpan balik, lalu skor masuk ke riwayat.',
+        }),
+        el('div', { class: 'latihan-hero__actions' }, importButton, sampleButton),
+      );
+
+      const stats = el('section', { class: 'latihan-stats', 'aria-label': 'Statistik latihan' });
+      stats.append(
+        el('div', { class: 'latihan-stat' },
+          el('p', { class: 'latihan-stat__label', text: 'Paket' }),
+          el('p', { class: 'latihan-stat__value', text: String(banks.length) }),
+        ),
+        el('div', { class: 'latihan-stat' },
+          el('p', { class: 'latihan-stat__label', text: 'Soal' }),
+          el('p', { class: 'latihan-stat__value', text: String(totalQuestions) }),
+        ),
+        el('div', { class: 'latihan-stat' },
+          el('p', { class: 'latihan-stat__label', text: 'Terbaik' }),
+          el('p', {
+            class: 'latihan-stat__value',
+            text: attempts.length > 0 ? `${bestPercent}%` : '—',
+          }),
+        ),
+      );
+
+      const bankSection = el('section', { class: 'latihan-section' });
+      bankSection.append(
+        el('div', { class: 'latihan-section__head' },
+          el('h3', { class: 'latihan-section__title', text: 'Paket soal' }),
+          el('span', { class: 'latihan-count', text: String(banks.length) }),
+        ),
+      );
+
+      if (banks.length === 0) {
+        bankSection.append(
+          el('div', { class: 'empty-card empty-card--wide latihan-empty' },
+            el('span', { class: 'empty-card__icon', html: icon('upload') }),
+            el('h2', { class: 'empty-card__title', text: 'Belum ada paket soal' }),
+            el('p', {
+              class: 'empty-card__text',
+              text: 'Impor file JSON berisi daftar pertanyaan pilihan ganda. Unduh contoh di atas untuk melihat formatnya.',
+            }),
+            el('div', { class: 'empty-actions' },
+              makeButton({
+                label: 'Impor paket soal',
+                iconName: 'upload',
+                variant: 'primary',
+                onClick: () => fileInput.click(),
+              }),
+            ),
+          ),
+        );
+      } else {
+        for (const bank of banks) {
+          const last = lastAttemptFor(bank.id);
+          const card = el('article', { class: 'latihan-bank' });
+          const head = el('div', { class: 'latihan-bank__head' });
+          const body = el('div', { class: 'latihan-bank__body' });
+          const meta = [
+            bank.subject,
+            `${bank.questions?.length ?? 0} soal`,
+          ].filter(Boolean).join(' · ');
+          body.append(
+            el('h4', { class: 'latihan-bank__title', text: bank.title }),
+            el('p', { class: 'latihan-bank__meta', text: meta }),
+          );
+
+          const removeButton = el('button', {
+            class: 'icon-button latihan-bank__delete',
+            type: 'button',
+            'aria-label': `Hapus paket "${bank.title}"`,
+            html: icon('trash', 'icon'),
+          });
+          removeButton.addEventListener('click', () => deleteBank(bank));
+
+          head.append(
+            el('span', { class: 'latihan-bank__icon', html: icon('book', 'icon') }),
+            body,
+            removeButton,
+          );
+
+          if (bank.description) {
+            card.append(head, el('p', { class: 'latihan-bank__description', text: bank.description }));
+          } else {
+            card.append(head);
+          }
+
+          const footer = el('div', { class: 'latihan-bank__footer' });
+          const lastText = last
+            ? `Skor terakhir ${percentOf(last)}% · ${last.correct}/${last.total} benar`
+            : 'Belum pernah dikerjakan';
+          footer.append(
+            el('p', { class: 'latihan-bank__last' }, el('strong', { text: lastText })),
+            makeButton({
+              label: last ? 'Latihan lagi' : 'Mulai latihan',
+              iconName: 'arrowRight',
+              variant: 'primary',
+              onClick: () => startPractice(bank),
+            }),
+          );
+          card.append(footer);
+          bankSection.append(card);
+        }
+      }
+
+      const historySection = el('section', { class: 'latihan-section' });
+      const historyHead = el('div', { class: 'latihan-section__head' },
+        el('h3', { class: 'latihan-section__title', text: 'Riwayat skor' }),
+      );
+      if (attempts.length > 0) {
+        historyHead.append(
+          makeButton({
+            label: 'Hapus riwayat',
+            variant: 'ghost',
+            iconName: 'trash',
+            onClick: clearHistory,
+          }),
+        );
+      }
+      historySection.append(historyHead);
+
+      if (attempts.length === 0) {
+        historySection.append(
+          el('p', {
+            class: 'latihan-history__empty',
+            text: 'Skor akan muncul di sini setelah kamu menyelesaikan satu paket latihan.',
+          }),
+        );
+      } else {
+        const list = el('ol', { class: 'latihan-history' });
+        for (const attempt of attempts.slice(0, 8)) {
+          const percent = percentOf(attempt);
+          const tone = percent >= 80 ? 'success' : percent >= 50 ? 'warning' : 'danger';
+          list.append(
+            el('li', { class: 'latihan-history__row' },
+              el('span', {
+                class: `latihan-history__score latihan-history__score--${tone}`,
+                text: `${percent}%`,
+              }),
+              el('div', { class: 'latihan-history__body' },
+                el('p', { class: 'latihan-history__title', text: attempt.bankTitle || 'Latihan' }),
+                el('p', {
+                  class: 'latihan-history__meta',
+                  text: [
+                    attempt.correct != null && attempt.total != null
+                      ? `${attempt.correct}/${attempt.total} benar`
+                      : null,
+                    formatDate(attempt.completedAt),
+                    formatDuration(attempt.durationMs),
+                  ].filter(Boolean).join(' · '),
+                }),
+              ),
+            ),
+          );
+        }
+        historySection.append(list);
+        if (attempts.length > 8) {
+          historySection.append(
+            el('p', {
+              class: 'latihan-history__meta',
+              text: `Menampilkan 8 dari ${attempts.length} riwayat terbaru.`,
+            }),
+          );
+        }
+      }
+
+      root.append(hero, stats, bankSection, historySection, fileInput);
+    };
+
+    const renderQuestion = () => {
+      if (!session) return;
+      const total = session.questions.length;
+      const question = session.questions[session.index];
+      if (!question) {
+        finishPractice();
+        return;
+      }
+      const selected = session.answers[session.index];
+      const answered = Number.isInteger(selected);
+      const isCorrect = selected === question.answer;
+      const progress = Math.round(((session.index + (answered ? 1 : 0)) / total) * 100);
+
+      root.replaceChildren();
+      const top = el('div', { class: 'latihan-practice__top' });
+      top.append(
+        makeButton({
+          label: 'Keluar',
+          iconName: 'arrowLeft',
+          variant: 'ghost',
+          onClick: leavePractice,
+        }),
+        el('p', {
+          class: 'latihan-practice__counter',
+          text: `Soal ${session.index + 1} dari ${total}`,
+        }),
+      );
+
+      const progressBar = el('div', {
+        class: 'latihan-progress',
+        role: 'progressbar',
+        'aria-label': 'Kemajuan latihan',
+        'aria-valuemin': '0',
+        'aria-valuemax': '100',
+        'aria-valuenow': String(progress),
+      });
+      progressBar.append(el('span', {
+        class: 'latihan-progress__fill',
+        style: { width: `${progress}%` },
+      }));
+
+      const card = el('article', { class: 'latihan-question' });
+      card.append(el('h2', { class: 'latihan-question__title', text: question.question }));
+
+      const options = el('div', {
+        class: 'latihan-options',
+        role: 'group',
+        'aria-label': 'Pilihan jawaban',
+      });
+      question.options.forEach((option, optionIndex) => {
+        const isAnswer = optionIndex === question.answer;
+        const isSelected = optionIndex === selected;
+        const classes = ['latihan-option'];
+        if (answered && isAnswer) classes.push('is-correct');
+        else if (answered && isSelected) classes.push('is-wrong');
+
+        const button = el('button', {
+          class: classes.join(' '),
+          type: 'button',
+          disabled: answered,
+          'aria-pressed': String(isSelected),
+        });
+        button.append(
+          el('span', { class: 'latihan-option__letter', text: OPTION_LABELS[optionIndex] }),
+          el('span', { class: 'latihan-option__text', text: option }),
+        );
+        if (answered && (isAnswer || isSelected)) {
+          button.append(el('span', {
+            class: 'latihan-option__icon',
+            html: icon(isAnswer ? 'checkCircle' : 'xCircle', 'icon'),
+          }));
+        }
+        button.addEventListener('click', () => answerQuestion(optionIndex));
+        options.append(button);
+      });
+      card.append(options);
+
+      const wrapper = el('div', { class: 'latihan-practice' });
+      wrapper.append(top, progressBar, card);
+
+      if (answered) {
+        const feedback = el('div', {
+          class: `latihan-feedback latihan-feedback--${isCorrect ? 'success' : 'danger'}`,
+          role: 'status',
+        });
+        feedback.append(
+          el('p', {
+            class: 'latihan-feedback__title',
+            text: isCorrect ? 'Jawaban benar' : 'Belum tepat',
+          }),
+        );
+        if (!isCorrect) {
+          feedback.append(el('p', {
+            class: 'latihan-feedback__text',
+            text: `Jawaban yang benar: ${OPTION_LABELS[question.answer]}. ${question.options[question.answer]}`,
+          }));
+        }
+        if (question.explanation) {
+          feedback.append(el('p', {
+            class: 'latihan-feedback__explanation',
+            text: question.explanation,
+          }));
+        }
+        wrapper.append(feedback);
+        wrapper.append(
+          makeButton({
+            label: session.index >= total - 1 ? 'Lihat hasil' : 'Soal berikutnya',
+            iconName: 'arrowRight',
+            variant: 'primary',
+            className: 'latihan-practice__next',
+            onClick: goNext,
+          }),
+        );
+      }
+
+      root.append(wrapper);
+      if (answered) {
+        requestAnimationFrame(() => {
+          wrapper.querySelector('.latihan-practice__next')?.focus({ preventScroll: true });
+        });
+      }
+    };
+
+    const renderResult = (attempt, questions, answers, bank) => {
+      root.replaceChildren();
+      const percent = percentOf(attempt);
+      const tone = percent >= 80 ? 'success' : percent >= 50 ? 'warning' : 'danger';
+      const message = percent >= 90
+        ? 'Luar biasa. Pemahamanmu sudah kuat.'
+        : percent >= 75
+          ? 'Bagus. Sedikit lagi menuju sempurna.'
+          : percent >= 60
+            ? 'Sudah di jalur yang benar. Tinjau jawaban yang belum tepat.'
+            : 'Jangan menyerah. Baca ulang penjelasan lalu coba lagi.';
+
+      const result = el('section', { class: 'latihan-result' });
+      result.append(
+        el('p', { class: 'latihan-result__eyebrow', text: 'Latihan selesai' }),
+        el('p', {
+          class: `latihan-result__percent latihan-result__percent--${tone}`,
+          text: `${percent}%`,
+        }),
+        el('p', {
+          class: 'latihan-result__detail',
+          text: `${attempt.correct} dari ${attempt.total} soal benar`,
+        }),
+        el('p', { class: 'latihan-result__message', text: message }),
+      );
+
+      const actions = el('div', { class: 'latihan-result__actions' });
+      actions.append(
+        makeButton({
+          label: 'Ulangi latihan',
+          iconName: 'refresh',
+          variant: 'primary',
+          onClick: () => startPractice(bank),
+        }),
+        makeButton({
+          label: 'Kembali ke daftar',
+          iconName: 'arrowLeft',
+          variant: 'secondary',
+          onClick: () => renderHome(),
+        }),
+      );
+      result.append(actions);
+
+      const review = el('details', { class: 'latihan-review' });
+      review.append(el('summary', {
+        text: `Tinjau jawaban (${questions.length} soal)`,
+      }));
+      const reviewList = el('ol', { class: 'latihan-review__list' });
+      questions.forEach((question, index) => {
+        const selected = answers[index];
+        const isCorrect = selected === question.answer;
+        const selectedText = Number.isInteger(selected)
+          ? `${OPTION_LABELS[selected]}. ${question.options[selected]}`
+          : 'Tidak dijawab';
+        const item = el('li', { class: 'latihan-review__item' });
+        item.append(
+          el('p', {
+            class: 'latihan-review__question',
+            text: `${index + 1}. ${question.question}`,
+          }),
+          el('p', { class: 'latihan-review__answer' },
+            el('strong', { text: isCorrect ? 'Jawabanmu benar: ' : 'Jawabanmu: ' }),
+            document.createTextNode(selectedText),
+          ),
+          el('p', { class: 'latihan-review__answer' },
+            el('strong', { text: 'Kunci: ' }),
+            document.createTextNode(`${OPTION_LABELS[question.answer]}. ${question.options[question.answer]}`),
+          ),
+        );
+        if (question.explanation) {
+          item.append(el('p', {
+            class: 'latihan-review__explanation',
+            text: question.explanation,
+          }));
+        }
+        reviewList.append(item);
+      });
+      review.append(reviewList);
+
+      root.append(result, review);
+    };
+
+    const load = async () => {
+      root.replaceChildren(el('div', {
+        class: 'latihan-history__empty',
+        text: 'Memuat paket soal…',
+      }));
+      try {
+        const [storedBanks, storedAttempts] = await Promise.all([
+          banksRepo.list(),
+          attemptsRepo.list(),
+        ]);
+        if (ctx.signal.aborted) return;
+        banks = sortBanks(storedBanks);
+        attempts = sortAttempts(storedAttempts);
+        renderHome();
+      } catch (error) {
+        console.error('[Latihan] Data latihan gagal dimuat.', error);
+        if (ctx.signal.aborted) return;
+        root.replaceChildren(
+          el('div', { class: 'empty-card empty-card--wide' },
+            el('span', { class: 'empty-card__icon empty-card__icon--danger', html: icon('alert') }),
+            el('h2', { class: 'empty-card__title', text: 'Data latihan gagal dimuat' }),
+            el('p', {
+              class: 'empty-card__text',
+              text: 'Coba buka ulang modul ini. Data yang sudah tersimpan tidak dihapus.',
+            }),
+          ),
+        );
+      }
+    };
+
+    await load();
+  },
+};
