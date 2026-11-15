@@ -585,4 +585,298 @@ export class App {
       view.append(el('div', { class: 'empty-card empty-card--wide' },
         el('span', { class: 'empty-card__icon', html: icon('folder') }),
         el('h2', { class: 'empty-card__title', text: 'Belum ada modul' }),
-  
+        el('p', {
+          class: 'empty-card__text',
+          text: 'Tambahkan modul lewat js/modules/modules.json. Setelah termuat, modul akan muncul di halaman ini.',
+        }),
+      ));
+    }
+
+    const settingsCard = el('a', {
+      class: 'flex items-center gap-3 rounded-[26px] border border-ink/[0.06] bg-ink/[0.025] p-3.5 transition active:scale-[0.98]',
+      href: '#/pengaturan',
+    });
+    settingsCard.append(
+      el('span', {
+        class: 'grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-ink/[0.05] text-ink/65',
+        html: icon('settings', 'h-[18px] w-[18px]'),
+      }),
+      el('span', { class: 'min-w-0 flex-1' },
+        el('span', { class: 'block text-[13px] font-semibold text-ink/80', text: 'Pengaturan & data' }),
+        el('span', { class: 'mt-0.5 block text-[11px] text-ink/45', text: 'Profil, backup, penyimpanan, dan versi aplikasi.' }),
+      ),
+      el('span', { class: 'text-ink/35', html: icon('arrowRight', 'h-4 w-4') }),
+    );
+    view.append(settingsCard);
+
+    this.#routeView.replaceChildren(view);
+    this.#activeCleanup = null;
+  }
+
+  async #prepareNavigation({ title, announce, path = this.#router.path }) {
+    const id = ++this.#navigationId;
+    const previousCleanup = this.#activeCleanup;
+    this.#activeCleanup = null;
+
+    if (previousCleanup) {
+      try {
+        await previousCleanup();
+      } catch (error) {
+        console.error('[App] Cleanup view sebelumnya gagal.', error);
+      }
+    }
+
+    if (id !== this.#navigationId) return null;
+
+    this.#ui.closeAll();
+    document.title = title;
+    this.#routeAnnouncer.textContent = announce ? `${announce} dibuka.` : '';
+    this.#previousPath = this.#currentPath;
+    this.#currentPath = path;
+    this.#updateActiveNavigation(path);
+    this.#updateHeader(path);
+    this.#updateQuickAddVisibility(path);
+    this.#mainView?.scrollTo?.({ top: 0, behavior: 'auto' });
+    return id;
+  }
+
+  async #renderHomeRoute() {
+    const id = await this.#prepareNavigation({
+      title: `${APP_INFO.name}`,
+      announce: 'Beranda',
+      path: '/',
+    });
+    if (id === null) return;
+
+    const cleanup = renderHome(this.#routeView, {
+      registry: this.#registry,
+      bus,
+      profileName: this.#profileName,
+      version: APP_INFO.version,
+      db: this.#db,
+      ui: this.#ui,
+      onQuickAdd: () => this.#handleQuickAdd(),
+    });
+
+    if (id !== this.#navigationId) {
+      cleanup?.();
+      return;
+    }
+    this.#activeCleanup = typeof cleanup === 'function' ? cleanup : null;
+  }
+
+  async #renderSettingsRoute() {
+    const id = await this.#prepareNavigation({
+      title: `Pengaturan · ${APP_INFO.shortName}`,
+      announce: 'Pengaturan',
+      path: '/pengaturan',
+    });
+    if (id === null) return;
+
+    const cleanup = renderSettings(this.#routeView, {
+      db: this.#db,
+      ui: this.#ui,
+      pwa: this.#pwa,
+      theme: this.#theme,
+      version: APP_INFO.version,
+      profileName: this.#profileName,
+      onProfileNameChange: (nextName) => {
+        this.#profileName = nextName;
+        this.#paintProfileAvatar();
+      },
+      onBackupExported: () => this.#refreshNotifications(),
+      reload: () => window.location.reload(),
+    });
+    this.#activeCleanup = typeof cleanup === 'function' ? cleanup : null;
+  }
+
+  async #renderModuleRoute(moduleId) {
+    const module = this.#registry.getModule(moduleId);
+
+    if (!module) {
+      await this.#renderNotFoundRoute(`Modul "${moduleId}" tidak ditemukan.`);
+      return;
+    }
+
+    const id = await this.#prepareNavigation({
+      title: `${module.name} · ${APP_INFO.shortName}`,
+      announce: `Modul ${module.name}`,
+      path: `/modul/${module.id}`,
+    });
+    if (id === null) return;
+
+    const view = el('div', { class: 'view module-view' });
+    const content = el('div', { class: 'module-content' });
+    view.append(content);
+    this.#routeView.replaceChildren(view);
+
+    let cleanup;
+    try {
+      cleanup = await this.#registry.mount(module.id, content, {
+        onError: (detail) => {
+          if (id !== this.#navigationId) return;
+          this.#renderModuleError(content, module, detail.error);
+        },
+      });
+    } catch (error) {
+      console.error(`[App] Modul "${module.id}" gagal di-mount.`, error);
+      if (id !== this.#navigationId) return;
+      this.#renderModuleError(content, module, error);
+      return;
+    }
+
+    if (id !== this.#navigationId) {
+      await cleanup?.();
+      return;
+    }
+    this.#activeCleanup = typeof cleanup === 'function' ? cleanup : null;
+  }
+
+  #renderModuleError(container, module, error = null) {
+    const card = el('div', { class: 'empty-card empty-card--wide' },
+      el('span', { class: 'empty-card__icon empty-card__icon--danger', html: icon('alert') }),
+      el('h2', { class: 'empty-card__title', text: 'Modul gagal ditampilkan' }),
+      el('p', {
+        class: 'empty-card__text',
+        text: `Data modul ${module.name} tetap aman. Coba muat ulang modul ini.`,
+      }),
+      error
+        ? el('details', { class: 'fatal-details' },
+          el('summary', { text: 'Detail teknis' }),
+          el('code', { text: error.message ?? String(error) }),
+        )
+        : null,
+    );
+    const actions = el('div', { class: 'empty-actions' });
+    const retry = el('button', {
+      class: 'btn btn--secondary',
+      type: 'button',
+      html: `${icon('refresh')}<span>Coba lagi</span>`,
+    });
+    retry.addEventListener('click', () => this.#router.navigate(`/modul/${module.id}`));
+    const home = el('a', {
+      class: 'btn btn--ghost',
+      href: '#/',
+      text: 'Kembali ke beranda',
+    });
+    actions.append(retry, home);
+    card.append(actions);
+    container.replaceChildren(card);
+  }
+
+  async #renderNotFoundRoute(message = 'Halaman yang kamu cari tidak tersedia.') {
+    const id = await this.#prepareNavigation({
+      title: `Tidak ditemukan · ${APP_INFO.shortName}`,
+      announce: 'Halaman tidak ditemukan',
+      path: this.#router.path,
+    });
+    if (id === null) return;
+
+    const view = el('div', { class: 'view' });
+    const card = el('div', { class: 'empty-card empty-card--wide empty-card--page' },
+      el('span', { class: 'empty-card__icon', html: icon('folder') }),
+      el('h1', { class: 'empty-card__title', text: 'Tidak ditemukan' }),
+      el('p', { class: 'empty-card__text', text: message }),
+    );
+    const actions = el('div', { class: 'empty-actions' });
+    actions.append(el('a', { class: 'btn btn--primary', href: '#/', text: 'Kembali ke beranda' }));
+    card.append(actions);
+    view.append(card);
+    this.#routeView.replaceChildren(view);
+    this.#activeCleanup = null;
+  }
+
+  async #startPwa() {
+    const registration = await this.#pwa.register();
+    if (registration) {
+      this.#pwa.cacheModuleAssets(this.#registry.assetUrls);
+    }
+  }
+
+  #showBootWarnings() {
+    if (!this.#bootWarnings.length) return;
+    this.#ui.toast(this.#bootWarnings.join(' '), {
+      type: 'warning',
+      duration: 7000,
+    });
+  }
+
+  async #maybeRemindBackup() {
+    try {
+      const reminder = await getBackupReminder(this.#db);
+      if (!reminder.shouldRemind) return;
+
+      // Tandai sudah diingatkan agar toast tidak muncul setiap membuka aplikasi.
+      await snoozeBackupReminder(this.#db);
+      this.#refreshNotifications();
+
+      this.#ui.toast(
+        `${describeBackupAge(reminder)}. Buat cadangan JSON agar data tetap aman jika penyimpanan dibersihkan.`,
+        {
+          type: 'warning',
+          duration: 0,
+          action: {
+            label: 'Buka pengaturan',
+            onClick: () => this.#router.navigate('/pengaturan'),
+          },
+        },
+      );
+    } catch (error) {
+      console.warn('[App] Pengingat backup tidak dapat diperiksa.', error);
+    }
+  }
+
+  #showFatalError(error) {
+    console.error('[App] Boot gagal.', error);
+    this.#hideBootScreen();
+    document.body.classList.add('is-ready');
+
+    const view = el('div', { class: 'view' });
+    const card = el('div', { class: 'empty-card empty-card--wide empty-card--page' },
+      el('span', { class: 'empty-card__icon empty-card__icon--danger', html: icon('alert') }),
+      el('h1', { class: 'empty-card__title', text: 'Aplikasi tidak dapat dimulai' }),
+      el('p', {
+        class: 'empty-card__text',
+        text: 'Penyimpanan lokal tidak dapat dibuka. Tutup mode privat, izinkan penyimpanan situs, lalu muat ulang aplikasi.',
+      }),
+      el('details', { class: 'fatal-details' },
+        el('summary', { text: 'Detail teknis' }),
+        el('code', { text: error?.message ?? String(error) }),
+      ),
+    );
+    const actions = el('div', { class: 'empty-actions' });
+    const retry = el('button', {
+      class: 'btn btn--primary',
+      type: 'button',
+      text: 'Muat ulang aplikasi',
+    });
+    retry.addEventListener('click', () => window.location.reload());
+    actions.append(retry);
+    card.append(actions);
+    view.append(card);
+    this.#routeView.replaceChildren(view);
+    this.#activeCleanup = null;
+  }
+
+  #hideBootScreen() {
+    if (!this.#bootScreen) return;
+    this.#bootScreen.classList.add('is-hiding');
+    window.setTimeout(() => this.#bootScreen?.remove(), 450);
+  }
+
+  #revealApp() {
+    document.body.classList.add('is-ready');
+    this.#hideBootScreen();
+  }
+
+  #handleRouteError(error) {
+    console.error('[App] Navigasi gagal.', error);
+    this.#ui?.toast('Halaman gagal ditampilkan. Coba lagi.', {
+      type: 'error',
+    });
+  }
+
+  get appReady() {
+    return this.#booted;
+  }
+}
