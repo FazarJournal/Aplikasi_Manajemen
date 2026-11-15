@@ -963,4 +963,220 @@ body.is-ready .app-shell {
     inset: 0 auto 0 0;
     z-index: 60;
     display: flex;
-    flex-dire
+    flex-direction: column;
+    width: var(--sidebar-width);
+    padding: 26px 18px 18px;
+    border-right: 1px solid var(--border);
+    background:
+      radial-gradient(ellipse at 20% 0%, rgb(var(--brand-strong-rgb) / 0.07), transparent 42%),
+      rgba(5, 13, 8, 0.74);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+
+  .sidebar .brand {
+    padding: 0 10px 24px;
+  }
+
+  .sidebar__nav {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 3px;
+    overflow-y: auto;
+    padding: 3px 0 20px;
+  }
+
+  .sidebar__footer {
+    display: grid;
+    gap: 13px;
+    margin-top: auto;
+    padding-top: 15px;
+    border-top: 1px solid var(--border);
+  }
+
+  .nav-label {
+    margin: 0 0 6px;
+    padding: 0 12px;
+    color: var(--muted);
+    font-size: 9.5px;
+    font-weight: 720;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+  }
+
+  .nav-label--spaced {
+    margin-top: 19px;
+  }
+
+  .nav-empty {
+    margin: 2px 12px 4px;
+    color: var(--subtle);
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+
+  .nav-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 42px;
+    padding: 7px 11px;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 580;
+    text-decoration: none;
+    transition:
+      background var(--transition),
+      border-color var(--transition),
+      color var(--transition);
+  }
+
+  .nav-item:hover {
+    background: rgb(var(--ink-rgb) / 0.035);
+    color: var(--text-secondary);
+  }
+
+  .nav-item.is-active {
+    border-color: rgb(var(--brand-strong-rgb) / 0.16);
+    background: linear-gradient(90deg, rgb(var(--brand-strong-rgb) / 0.12), rgb(var(--brand-strong-rgb) / 0.035));
+    color: var(--text);
+  }
+
+  .nav-item.is-active::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: -19px;
+    width: 2px;
+    height: 18px;
+    border-radius: var(--radius-full);
+    background: linear-gradient(var(--primary), var(--accent));
+    transform: translateY(-50%);
+    box-shadow: 0 0 12px rgb(var(--brand-strong-rgb) / 0.4);
+  }
+
+  .nav-item__icon {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 24px;
+    height: 24px;
+    color: inherit;
+  }
+
+  .nav-item__icon svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .nav-item.is-active .nav-item__icon {
+    color: var(--accent);
+  }
+
+  .nav-item__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .privacy-note {
+    display: flex;
+    gap: 9px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: rgb(var(--ink-rgb) / 0.025);
+  }
+
+  .privacy-note__icon {
+    margin-top: 1px;
+    color: var(--accent);
+  }
+
+  .privacy-note__icon .icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  .privacy-note strong {
+    display: block;
+    color: var(--text-secondary);
+    font-size: 11.5px;
+    font-weight: 650;
+  }
+
+  .privacy-note p {
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.45;
+  }
+
+  .sidebar__version {
+    padding: 0 2px;
+    color: var(--subtle);
+    font-size: 10px;
+  }
+
+  .app-frame {
+    margin-left: var(--sidebar-width);
+  }
+
+  .topbar {
+    min-height: calc(70px + var(--safe-top));
+    padding: var(--safe-top) 34px 0;
+    border-bottom-color: transparent;
+    background: linear-gradient(to bottom, rgb(var(--canvas-rgb) / 0.84), rgb(var(--canvas-rgb) / 0.38));
+  }
+
+  .topbar__brand {
+    display: none;
+  }
+
+  .topbar__actions {
+    gap: 7px;
+  }
+
+  .connection-pill {
+    min-height: 30px;
+    padding: 5px 11px;
+    background: rgb(var(--ink-rgb) / 0.032);
+  }
+
+  .main-view {
+    padding: 16px 34px 60px;
+  }
+
+  .bottom-nav {
+    display: none;
+  }
+
+  .view-root {
+    padding-top: 4px;
+  }
+}
+
+@media (min-width: 1280px) {
+  .main-view {
+    padding-right: 52px;
+    padding-left: 52px;
+  }
+}
+
+/* ==========================================================================
+   Reduced motion
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
