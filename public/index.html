@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#06100b">
+  <meta name="description" content="Asisten pribadi siswa yang lokal, privat, dan bisa dipakai offline. Catat tugas, tenggat, dan keuangan pribadi.">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Asisten Siswa">
+
+  <title>Asisten Pribadi Siswa</title>
+  <script>
+    // Terapkan tema sebelum CSS dimuat agar tidak ada kedipan warna.
+    (() => {
+      try {
+        const stored = localStorage.getItem('asisten.theme');
+        const mode = stored === 'light' || stored === 'dark' ? stored : 'system';
+        const dark = mode === 'dark'
+          || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        const root = document.documentElement;
+        root.dataset.theme = dark ? 'dark' : 'light';
+        root.dataset.themeMode = mode;
+        root.style.colorScheme = dark ? 'dark' : 'light';
+        const meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', dark ? '#06100b' : '#f4f8f5');
+      } catch {
+        // Biarkan CSS default (gelap) dipakai bila localStorage tidak tersedia.
+      }
+    })();
+  </script>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="./styles/app.css">
+  <link rel="stylesheet" href="./styles/views.css">
+  <link rel="stylesheet" href="./styles/charts.css">
+  <link rel="stylesheet" href="./styles/overlays.css">
+  <link rel="stylesheet" href="./styles/native.css">
+  <link rel="stylesheet" href="./styles/tailwind.css">
+</head>
+<body class="h-screen w-screen overflow-hidden bg-canvas-deep font-sans text-ink antialiased">
+  <a class="skip-link" href="#main-view">Lewati ke konten utama</a>
+
+  <div id="boot-screen" class="boot" role="status" aria-live="polite">
+    <div class="boot__mark" aria-hidden="true">
+      <svg viewBox="0 0 48 48" fill="none">
+        <path d="M24 6.5c1.08 8.8 8.2 15.92 17 17-8.8 1.08-15.92 8.2-17 17-1.08-8.8-8.2-15.92-17-17 8.8-1.08 15.92-8.2 17-17Z" fill="currentColor"/>
+        <circle cx="38" cy="10" r="2.5" fill="currentColor" opacity=".55"/>
+        <circle cx="9.5" cy="38.5" r="1.5" fill="currentColor" opacity=".4"/>
+      </svg>
+    </div>
+    <p class="boot__title">Asisten Pribadi Siswa</p>
+    <p class="boot__hint">Menyiapkan ruang belajarmu…</p>
+    <span class="boot__bar" aria-hidden="true"><span></span></span>
+  </div>
+
+  <div class="app-root relative mx-auto flex w-full max-w-md flex-col overflow-hidden bg-canvas text-ink shadow-2xl shadow-black/70 ring-1 ring-ink/[0.06]" id="app-shell">
+    <header class="app-header relative z-30 flex shrink-0 items-center gap-2 border-b border-ink/[0.06] bg-canvas/85 px-3 backdrop-blur-xl">
+      <button class="app-header__button" id="header-back" type="button" aria-label="Kembali" hidden>
+        <span id="header-back-icon" aria-hidden="true"></span>
+      </button>
+
+      <div class="min-w-0 flex-1">
+        <p class="text-[9px] font-semibold uppercase tracking-[0.18em] text-ink/40">Asisten pribadi</p>
+        <h1 class="truncate text-[15px] font-semibold leading-tight tracking-[-0.02em] text-ink" id="header-title">Beranda</h1>
+      </div>
+
+      <div class="flex shrink-0 items-center gap-1">
+        <a class="app-header__button app-header__button--quiet" id="search-link" href="#/cari" aria-label="Cari modul">
+          <span id="search-icon" aria-hidden="true"></span>
+        </a>
+        <button class="app-header__button app-header__button--quiet relative" id="notification-button" type="button" aria-label="Buka notifikasi">
+          <span id="notification-icon" aria-hidden="true"></span>
+          <span class="notification-badge" id="notification-badge" hidden></span>
+        </button>
+        <a class="profile-chip" id="settings-link" href="#/pengaturan" aria-label="Buka pengaturan">
+          <span id="settings-link-icon" aria-hidden="true">S</span>
+        </a>
+      </div>
+    </header>
+
+    <div class="offline-banner" id="offline-banner" role="status" hidden>
+      <span id="offline-banner-icon" aria-hidden="true"></span>
+      <span>Mode offline. Data tetap tersimpan di perangkat.</span>
+    </div>
+
+    <main class="app-main relative flex-1 overflow-y-auto overscroll-contain" id="main-view" tabindex="-1">
+      <div class="view-root" id="route-view">
+        <div class="route-skeleton" aria-hidden="true">
+          <span class="skeleton skeleton--hero"></span>
+          <span class="skeleton skeleton--summary"></span>
+          <span class="skeleton skeleton--summary"></span>
+        </div>
+      </div>
+    </main>
+
+    <button class="quick-add-button" id="quick-add" type="button" aria-label="Catat cepat" title="Catat cepat (Alt+N)" hidden>
+      <span id="quick-add-icon" aria-hidden="true"></span>
+    </button>
+
+    <nav class="bottom-nav" id="bottom-nav" aria-label="Navigasi utama"></nav>
+  </div>
+
+  <p class="sr-only" id="route-announcer" aria-live="polite" aria-atomic="true"></p>
+  <div class="toast-stack" id="toast-root"></div>
+  <div id="modal-root"></div>
+
+  <noscript>
+    <div class="noscript">Aplikasi ini membutuhkan JavaScript untuk berjalan. Aktifkan JavaScript di browser kamu.</div>
+  </noscript>
+
+  <script type="module" src="./js/main.js"></script>
+</body>
+  </html>
+          
