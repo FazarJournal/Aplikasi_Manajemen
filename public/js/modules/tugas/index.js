@@ -683,4 +683,580 @@ export default {
       el('span', { class: 'skeleton skeleton--task' }),
     );
 
-    const list
+    const list = el('ul', { class: 'tugas-list', 'aria-label': 'Daftar tugas' });
+    const listRegion = el('div', { 'aria-live': 'polite' });
+
+    wrapper.append(
+      stats,
+      el('div', { class: 'tugas__toolbar' }, filters, toolbarActions),
+      loadingState,
+      listRegion,
+    );
+    container.replaceChildren(wrapper);
+
+    function refreshStats() {
+      const active = tasks.filter((task) => !task.done);
+      const overdue = active.filter((task) => (
+        utils.describeDueDate(task.dueDate).state === 'overdue'
+      ));
+      activeValue.textContent = String(active.length);
+      overdueValue.textContent = String(overdue.length);
+      completedValue.textContent = String(tasks.length - active.length);
+    }
+
+    function refreshFilterButtons() {
+      for (const [value, { button, count }] of filterButtons) {
+        button.setAttribute('aria-pressed', String(value === currentFilter));
+        let total = 0;
+        if (value === 'active') total = tasks.filter((task) => !task.done).length;
+        else if (value === 'done') total = tasks.filter((task) => task.done).length;
+        else total = tasks.length;
+        count.textContent = String(total);
+      }
+    }
+
+    function scheduledTaskCount() {
+      return notifications.scheduledIds.filter((id) => id.startsWith('tugas:')).length;
+    }
+
+    function updateReminderButton() {
+      const permission = notifications.permission;
+      const count = permission === 'granted' ? scheduledTaskCount() : 0;
+      reminderButton.dataset.state = permission === 'granted'
+        ? 'on'
+        : permission === 'denied'
+          ? 'blocked'
+          : 'off';
+
+      const label = permission === 'granted'
+        ? count > 0
+          ? `Pengingat aktif, ${count} jadwal`
+          : 'Pengingat aktif'
+        : permission === 'denied'
+          ? 'Notifikasi diblokir'
+          : 'Atur pengingat tenggat';
+      reminderButton.setAttribute('aria-label', label);
+      reminderButton.title = label;
+    }
+
+    function reminderBody(task) {
+      const difference = utils.daysFromToday(task.dueDate);
+      if (difference === 0) return `"${task.title}" jatuh tempo hari ini.`;
+      if (difference === 1) return `"${task.title}" jatuh tempo besok.`;
+      return `"${task.title}" ${utils.describeDueDate(task.dueDate).label.toLowerCase()}.`;
+    }
+
+    function reminderUrl() {
+      return new URL('./#/modul/tugas', document.baseURI).href;
+    }
+
+    async function syncReminders() {
+      const sequence = ++reminderSyncSequence;
+      notifications.cancelAll('tugas:');
+      updateReminderButton();
+
+      if (!notifications.canNotify || ctx.signal.aborted) return;
+
+      let logs = [];
+      try {
+        logs = await reminderLog.list();
+      } catch (error) {
+        console.warn('[Tugas] Riwayat pengingat tidak dapat dibaca.', error);
+      }
+      if (ctx.signal.aborted || sequence !== reminderSyncSequence) return;
+
+      const notifiedKeys = new Set(
+        logs.map((row) => row?.key).filter((key) => typeof key === 'string'),
+      );
+      const now = new Date();
+      const todayKey = utils.toDateKey(now);
+      const horizon = new Date(now.getTime() + REMINDER_HORIZON_MS);
+
+      for (const task of tasks) {
+        if (task.done || task.remind === false || !task.dueDate) continue;
+        const due = utils.parseDateKey(task.dueDate);
+        if (!due || notifiedKeys.has(`${task.id}:${task.dueDate}`)) continue;
+
+        due.setHours(REMINDER_HOUR, REMINDER_MINUTE, 0, 0);
+        let at = due;
+        if (at.getTime() <= now.getTime()) {
+          // Tugas yang jatuh tempo hari ini tetap diingatkan sekali setelah
+          // aplikasi dibuka, tanpa menunggu pukul 07.30 besok.
+          if (task.dueDate !== todayKey) continue;
+          at = new Date(now.getTime() + REMINDER_IMMEDIATE_DELAY_MS);
+        }
+        if (at > horizon) continue;
+
+        const key = `${task.id}:${task.dueDate}`;
+        notifications.schedule({
+          id: `tugas:${key}`,
+          at,
+          title: task.subject ? `Tenggat ${task.subject}` : 'Tenggat tugas',
+          body: reminderBody(task),
+          tag: `tugas:${key}`,
+          data: { url: reminderUrl(), taskId: task.id },
+          onShown: async () => {
+            try {
+              await reminderLog.create({
+                key,
+                taskId: task.id,
+                dueDate: task.dueDate,
+                shownAt: new Date().toISOString(),
+              });
+            } catch (error) {
+              console.warn('[Tugas] Status pengingat gagal disimpan.', error);
+            }
+
+            if (!ctx.signal.aborted) {
+              ui.toast(`Pengingat: ${task.title}`, {
+                type: 'info',
+                duration: 5500,
+              });
+            }
+          },
+        });
+      }
+
+      updateReminderButton();
+    }
+
+    function openReminderDialog() {
+      const content = el('div', { class: 'tugas-reminder-dialog' });
+      let closed = false;
+
+      const renderDialog = () => {
+        if (closed) return;
+        const permission = notifications.permission;
+        const count = permission === 'granted' ? scheduledTaskCount() : 0;
+        const state = permission === 'granted'
+          ? 'on'
+          : permission === 'denied'
+            ? 'blocked'
+            : 'off';
+        const statusText = !notifications.supported
+          ? 'Browser ini belum mendukung notifikasi web pada konteks saat ini.'
+          : permission === 'denied'
+            ? 'Izin notifikasi diblokir. Buka setelan situs di browser untuk mengizinkannya kembali.'
+            : permission === 'granted'
+              ? count > 0
+                ? `${count} pengingat terjadwal untuk 14 hari ke depan.`
+                : 'Izin aktif. Tambahkan tanggal tenggat agar pengingat dijadwalkan.'
+              : 'Izinkan notifikasi agar pengingat tenggat bisa muncul.';
+
+        const actions = el('div', { class: 'tugas-reminder-actions' });
+
+        if (notifications.supported && permission === 'default') {
+          const enableButton = el('button', {
+            class: 'btn btn--primary',
+            type: 'button',
+            text: 'Aktifkan izin',
+          });
+          enableButton.addEventListener('click', async () => {
+            enableButton.disabled = true;
+            enableButton.textContent = 'Meminta…';
+            const result = await notifications.requestPermission();
+            await syncReminders();
+            if (closed) return;
+            renderDialog();
+            ui.toast(
+              result === 'granted'
+                ? 'Notifikasi diizinkan. Pengingat akan dijadwalkan.'
+                : 'Notifikasi belum diizinkan. Kamu bisa mencoba lagi lewat pengaturan situs.',
+              { type: result === 'granted' ? 'success' : 'warning', duration: 5500 },
+            );
+          });
+          actions.append(enableButton);
+        }
+
+        if (permission === 'granted') {
+          const testButton = el('button', {
+            class: 'btn btn--secondary',
+            type: 'button',
+            text: 'Kirim tes',
+          });
+          testButton.addEventListener('click', async () => {
+            const result = await notifications.show({
+              title: 'Pengingat tugas',
+              body: 'Notifikasi uji berhasil. Pengingat tenggat akan muncul seperti ini.',
+              tag: 'tugas:test',
+              data: { url: reminderUrl() },
+            });
+            ui.toast(
+              result.shown
+                ? 'Notifikasi uji dikirim.'
+                : 'Notifikasi tidak dapat ditampilkan. Periksa izin browser.',
+              { type: result.shown ? 'success' : 'warning' },
+            );
+          });
+
+          const refreshButton = el('button', {
+            class: 'btn btn--ghost',
+            type: 'button',
+            text: 'Perbarui jadwal',
+          });
+          refreshButton.addEventListener('click', async () => {
+            await syncReminders();
+            if (!closed) renderDialog();
+            ui.toast('Jadwal pengingat diperbarui.', { type: 'info' });
+          });
+          actions.append(testButton, refreshButton);
+        }
+
+        content.replaceChildren(
+          el('div', { class: 'tugas-reminder-status', dataset: { state } },
+            el('span', { class: 'tugas-reminder-status__dot', 'aria-hidden': 'true' }),
+            el('div', { class: 'tugas-reminder-status__copy' },
+              el('p', {
+                class: 'tugas-reminder-status__title',
+                text: `Notifikasi: ${notificationPermissionLabel(permission)}`,
+              }),
+              el('p', { class: 'tugas-reminder-status__text', text: statusText }),
+            ),
+          ),
+          ...(actions.childElementCount > 0 ? [actions] : []),
+          el('p', {
+            class: 'tugas-reminder-note',
+            text: 'Pengingat dijadwalkan pukul 07.30 pada tanggal tenggat. Timer berjalan selama aplikasi terbuka; browser tidak menjamin timer saat PWA ditutup.',
+          }),
+        );
+      };
+
+      renderDialog();
+      void ui.dialog({
+        title: 'Pengingat tenggat',
+        description: 'Notifikasi lokal untuk tugas yang mendekati tenggat.',
+        content,
+        actions: [{ label: 'Tutup', variant: 'ghost' }],
+      }).finally(() => {
+        closed = true;
+      });
+    }
+
+    function makeTaskItem(task) {
+      const due = utils.describeDueDate(task.dueDate);
+      const item = el('li', {
+        class: ['tugas-item', task.done ? 'is-done' : ''].filter(Boolean).join(' '),
+        dataset: { id: task.id },
+      });
+
+      const check = el('button', {
+        class: 'tugas-item__check',
+        type: 'button',
+        role: 'checkbox',
+        'aria-checked': String(Boolean(task.done)),
+        'aria-label': task.done
+          ? `Tandai "${task.title}" belum selesai`
+          : `Tandai "${task.title}" selesai`,
+        html: CHECK_ICON,
+      });
+      check.addEventListener('click', () => toggleTask(task));
+
+      const main = el('button', {
+        class: 'tugas-item__main',
+        type: 'button',
+        'aria-label': `Ubah tugas "${task.title}"`,
+      });
+      main.append(el('span', { class: 'tugas-item__title', text: task.title }));
+
+      const meta = el('span', { class: 'tugas-item__meta' });
+      if (task.subject) {
+        meta.append(el('span', { class: 'task-chip task-chip--subject', text: task.subject }));
+      }
+      if (task.dueDate && !task.done) {
+        const dueClass = due.state === 'overdue'
+          ? 'task-chip--overdue'
+          : due.state === 'today'
+            ? 'task-chip--today'
+            : due.state === 'soon'
+              ? 'task-chip--soon'
+              : '';
+        meta.append(el('span', {
+          class: ['task-chip', 'task-chip--due', dueClass].filter(Boolean).join(' '),
+        }, el('span', { html: CALENDAR_ICON }), due.label));
+      } else if (task.done) {
+        meta.append(el('span', { class: 'task-chip', text: 'Selesai' }));
+      }
+
+      if (meta.childElementCount > 0) main.append(meta);
+      main.addEventListener('click', () => openTaskForm(task));
+
+      const removeButton = el('button', {
+        class: 'tugas-item__delete',
+        type: 'button',
+        'aria-label': `Hapus tugas "${task.title}"`,
+        html: TRASH_ICON,
+      });
+      removeButton.addEventListener('click', () => deleteTask(task));
+
+      item.append(check, main, removeButton);
+      return item;
+    }
+
+    function makeEmptyState() {
+      const copy = currentFilter === 'active'
+        ? {
+          title: 'Tidak ada tugas aktif',
+          text: 'Waktu yang lega. Kalau ada pekerjaan baru, tuliskan di sini sebelum lupa.',
+        }
+        : currentFilter === 'done'
+          ? {
+            title: 'Belum ada yang selesai',
+            text: 'Tugas yang sudah dicentang akan muncul di sini sebagai pengingat progresmu.',
+          }
+          : {
+            title: 'Daftar tugas masih kosong',
+            text: 'Mulai dari satu tugas kecil. Kamu tidak perlu menyelesaikan semuanya sekaligus.',
+          };
+
+      const empty = el('div', { class: 'tugas-empty' },
+        el('span', { class: 'tugas-empty__icon', html: EMPTY_ICON }),
+        el('h3', { class: 'tugas-empty__title', text: copy.title }),
+        el('p', { class: 'tugas-empty__text', text: copy.text }),
+      );
+
+      if (currentFilter !== 'done') {
+        empty.append(el('button', {
+          class: 'btn btn--secondary',
+          type: 'button',
+          html: `${PLUS_ICON}<span>Tambah tugas pertama</span>`,
+          on: { click: () => openTaskForm() },
+        }));
+      }
+
+      return empty;
+    }
+
+    function renderList() {
+      const filtered = tasks.filter((task) => {
+        if (currentFilter === 'active') return !task.done;
+        if (currentFilter === 'done') return task.done;
+        return true;
+      });
+
+      list.replaceChildren(...sortTasks(filtered).map(makeTaskItem));
+      listRegion.replaceChildren();
+
+      if (!loading && filtered.length === 0) {
+        listRegion.append(makeEmptyState());
+      } else {
+        listRegion.append(list);
+      }
+    }
+
+    async function refresh({ announce = false } = {}) {
+      try {
+        tasks = await data.list();
+        if (ctx.signal.aborted) return;
+        loading = false;
+        loadingState.hidden = true;
+        refreshStats();
+        refreshFilterButtons();
+        renderList();
+        if (announce) {
+          listRegion.setAttribute('aria-busy', 'false');
+        }
+        syncReminders().catch((error) => {
+          console.warn('[Tugas] Sinkronisasi pengingat gagal.', error);
+        });
+      } catch (error) {
+        console.error('[Tugas] Gagal memuat data.', error);
+        if (!ctx.signal.aborted) {
+          ui.toast('Tugas tidak dapat dimuat dari penyimpanan lokal.', { type: 'error' });
+        }
+      }
+    }
+
+    async function toggleTask(task) {
+      try {
+        const nextDone = !task.done;
+        await data.update(task.id, {
+          done: nextDone,
+          completedAt: nextDone ? new Date().toISOString() : null,
+        });
+
+        if (ctx.signal.aborted) return;
+        await refresh();
+
+        if (nextDone) {
+          ui.toast('Tugas ditandai selesai.', {
+            type: 'success',
+            duration: 5000,
+            action: {
+              label: 'Urungkan',
+              onClick: async () => {
+                try {
+                  await data.update(task.id, { done: false, completedAt: null });
+                  if (!ctx.signal.aborted) await refresh();
+                } catch (error) {
+                  ui.toast(error.message, { type: 'error' });
+                }
+              },
+            },
+          });
+        }
+      } catch (error) {
+        ui.toast(error.message, { type: 'error' });
+      }
+    }
+
+    async function deleteTask(task) {
+      const approved = await ui.confirm({
+        title: 'Hapus tugas?',
+        message: `"${task.title}" akan dihapus dari perangkat ini. Kamu masih bisa mengurungkannya lewat notifikasi.`,
+        confirmLabel: 'Hapus tugas',
+        cancelLabel: 'Batal',
+        danger: true,
+      });
+      if (!approved || ctx.signal.aborted) return;
+
+      try {
+        await data.remove(task.id);
+        if (ctx.signal.aborted) return;
+        await refresh();
+
+        const snapshot = {
+          title: task.title,
+          subject: task.subject ?? '',
+          dueDate: task.dueDate ?? null,
+          remind: task.remind !== false,
+          notes: task.notes ?? '',
+          done: Boolean(task.done),
+          completedAt: task.completedAt ?? null,
+          schemaVersion: 1,
+        };
+
+        ui.toast('Tugas dihapus.', {
+          type: 'info',
+          duration: 6500,
+          action: {
+            label: 'Urungkan',
+            onClick: async () => {
+              try {
+                await data.create(snapshot);
+                if (!ctx.signal.aborted) await refresh();
+                ui.toast('Tugas dipulihkan.', { type: 'success' });
+              } catch (error) {
+                ui.toast(error.message, { type: 'error' });
+              }
+            },
+          },
+        });
+      } catch (error) {
+        ui.toast(error.message, { type: 'error' });
+      }
+    }
+
+    async function openTaskForm(task = null) {
+      if (ctx.signal.aborted) return;
+      const editing = Boolean(task);
+
+      const values = await ui.form({
+        title: editing ? 'Ubah tugas' : 'Tugas baru',
+        description: editing
+          ? 'Perbarui detail tugas atau tenggatnya.'
+          : 'Tulis sekonkret mungkin agar kamu tahu langkah pertamanya.',
+        submitLabel: editing ? 'Simpan perubahan' : 'Tambahkan tugas',
+        cancelLabel: 'Batal',
+        initialValues: {
+          title: task?.title ?? '',
+          subject: task?.subject ?? '',
+          dueDate: task?.dueDate ?? '',
+          remind: task?.remind !== false,
+          notes: task?.notes ?? '',
+        },
+        fields: [
+          {
+            name: 'title',
+            label: 'Judul tugas',
+            type: 'text',
+            placeholder: 'Contoh: Latihan soal larik',
+            required: true,
+            maxlength: 120,
+            autofocus: true,
+          },
+          {
+            name: 'subject',
+            label: 'Mata pelajaran',
+            type: 'text',
+            placeholder: 'Contoh: PPLG',
+            maxlength: 50,
+            half: true,
+          },
+          {
+            name: 'dueDate',
+            label: 'Tenggat',
+            type: 'date',
+            half: true,
+            helper: 'Boleh dikosongkan.',
+          },
+          {
+            name: 'remind',
+            label: 'Ingatkan saya pada pagi hari tenggat',
+            type: 'checkbox',
+            helper: 'Membutuhkan izin notifikasi. Pengingat berjalan selama aplikasi terbuka.',
+          },
+          {
+            name: 'notes',
+            label: 'Catatan',
+            type: 'textarea',
+            placeholder: 'Langkah kecil, sumber belajar, atau detail lain…',
+            maxlength: 500,
+            rows: 3,
+            helper: 'Tersimpan lokal, tidak dikirim ke mana pun.',
+          },
+        ],
+        validate: (formValues) => {
+          if (formValues.title.trim().length < 2) {
+            return { title: 'Judul minimal 2 karakter.' };
+          }
+          return null;
+        },
+      });
+
+      if (!values || ctx.signal.aborted) return;
+
+      const payload = {
+        title: values.title.trim(),
+        subject: values.subject.trim(),
+        dueDate: values.dueDate || null,
+        remind: Boolean(values.remind),
+        notes: values.notes.trim(),
+        schemaVersion: 1,
+      };
+
+      try {
+        if (editing) {
+          await data.update(task.id, payload);
+        } else {
+          await data.create({
+            ...payload,
+            done: false,
+            completedAt: null,
+          });
+        }
+
+        if (ctx.signal.aborted) return;
+        await refresh();
+        ui.toast(editing ? 'Perubahan tugas disimpan.' : 'Tugas baru ditambahkan.', {
+          type: 'success',
+        });
+      } catch (error) {
+        ui.toast(error.message, { type: 'error' });
+      }
+    }
+
+    ctx.on(EVENTS.DATA_CHANGED, (event) => {
+      if (event?.moduleId !== 'tugas' || event.collection !== 'tasks') return;
+      refresh().catch((error) => {
+        console.warn('[Tugas] Gagal menyegarkan daftar setelah data berubah.', error);
+      });
+    });
+
+    ctx.onCleanup(() => {
+      container.replaceChildren();
+    });
+
+    await refresh();
+    return undefined;
+  },
+};
