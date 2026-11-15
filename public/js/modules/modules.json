@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 1,
+  "modules": [
+    {
+      "id": "tugas",
+      "entry": "./tugas/index.js",
+      "enabled": true
+    },
+    {
+      "id": "keuangan",
+      "entry": "./keuangan/index.js",
+      "enabled": true
+    },
+    {
+      "id": "latihan",
+      "entry": "./latihan/index.js",
+      "enabled": true
+    }
+  ]
+}
