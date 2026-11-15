@@ -1,0 +1,13 @@
+{
+  "name": "asisten-pribadi-siswa",
+  "private": true,
+  "version": "1.5.0",
+  "description": "PWA lokal-first Asisten Pribadi Siswa. Tailwind hanya dipakai saat build CSS; runtime tetap vanilla JavaScript.",
+  "scripts": {
+    "build:css": "tailwindcss -c tailwind.config.js -i ./src/tailwind.css -o ./public/styles/tailwind.css --minify",
+    "watch:css": "tailwindcss -c tailwind.config.js -i ./src/tailwind.css -o ./public/styles/tailwind.css --watch"
+  },
+  "devDependencies": {
+    "tailwindcss": "3.4.17"
+  }
+}
